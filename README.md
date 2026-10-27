@@ -18,17 +18,17 @@ The WAN was never exposed: the router's NAT has no forwards. The risk was any de
 
 ## Why UFW did not apply
 
-UFW writes its rules into the `INPUT` chain. A port published with `ports: ["3000:3000"]` binds `0.0.0.0` (and `::`), and Docker reaches it with a DNAT rule in the `nat` table. After DNAT the packet is addressed to the container, so the kernel routes it through `FORWARD`, not `INPUT`, and the UFW rules never see it. `ufw status` keeps showing "deny", which is why nobody noticed.
+"Deny incoming" is UFW's `INPUT` policy. A port published with `ports: ["3000:3000"]` binds `0.0.0.0` (and `::`), and Docker reaches it with a DNAT rule in the `nat` table. After DNAT the packet is addressed to the container, so the kernel routes it through `FORWARD`, not `INPUT`. In `FORWARD`, Docker's own jumps (`DOCKER-USER`, then its `DOCKER` chains) sit ahead of UFW's forward chains and accept the packet before any UFW rule runs. `ufw status` keeps showing "deny", which is why nobody noticed.
 
 Containers with `network_mode: host` are different: they listen on the host itself, their traffic goes through `INPUT`, and UFW does filter them. I confirmed that on the same server: a host-network service bound to all interfaces timed out from the LAN.
 
 ## The fix
 
-1. Every published port binds loopback: `"127.0.0.1:3000:3000"`. Nothing outside the host can reach it.
+1. Every published port binds loopback: `"127.0.0.1:3000:3000"`. Nothing outside the host can reach it through the published port. (On Docker older than 28, a LAN neighbour that added a route to the bridge subnet could still reach container IPs directly; Docker 28 drops that, and the server runs 29.)
 2. The VPN (Tailscale) forwards each needed port to loopback (`tailscale serve --tcp <port> tcp://127.0.0.1:<port>`), so clients on the VPN use the same name and port as before and no URL changed.
 3. A rule for every new stack: never publish on `0.0.0.0`.
 
-The other common fix is DROP rules in Docker's `DOCKER-USER` chain. I chose loopback binds because each one is visible in the compose file it belongs to, and a forgotten firewall rule fails open while a forgotten bind fails closed.
+The other common fix is DROP rules in Docker's `DOCKER-USER` chain. That one fails closed for new ports, which is its advantage. I chose loopback binds because each one is visible in the compose file it belongs to. The cost: a missed `127.0.0.1:` falls back to `0.0.0.0` and fails open, which is why `audit` below exits non-zero on it.
 
 ## Before and after
 
